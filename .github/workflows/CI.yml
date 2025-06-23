@@ -27,17 +27,13 @@ jobs:
         with:
           version: ${{ matrix.julia-version }}
 
-      - name: Move into project directory
-        run: cd easyHPC.jl
-        shell: bash
-
       - name: Cache Julia registries and artifacts
         uses: actions/cache@v3
         with:
           path: |
             ~/.julia/registries
             ~/.julia/artifacts
-          key: ${{ runner.os }}-julia-${{ matrix.julia-version }}-registries-${{ hashFiles('easyHPC.jl/Project.toml') }}
+          key: ${{ runner.os }}-julia-${{ matrix.julia-version }}-registries-${{ hashFiles('Project.toml') }}
           restore-keys: |
             ${{ runner.os }}-julia-${{ matrix.julia-version }}-registries-
 
@@ -45,12 +41,12 @@ jobs:
         uses: actions/cache@v3
         with:
           path: ~/.julia/compiled
-          key: ${{ runner.os }}-julia-${{ matrix.julia-version }}-compiled-${{ hashFiles('easyHPC.jl/Manifest.toml') }}
+          key: ${{ runner.os }}-julia-${{ matrix.julia-version }}-compiled-${{ hashFiles('Manifest.toml') }}
           restore-keys: |
             ${{ runner.os }}-julia-${{ matrix.julia-version }}-compiled-
 
       - name: Install dependencies
-        run: julia --project=easyHPC.jl -e 'using Pkg; Pkg.instantiate()'
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
       - name: Run tests
-        run: julia --project=easyHPC.jl -e 'using Pkg; Pkg.test()'
+        run: julia --project=. -e 'using Pkg; Pkg.test()'
