@@ -9,7 +9,7 @@ Folds = "41a02a25-b8f0-4f67-bc48-60067656b558"
 LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
 SIMD = "fdea26ae-647d-5447-a871-4b548cad5224"
 SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
-Static = "0.8"
+Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
 Transducers = "28d57a85-8fef-5791-bfe6-a80928e7c999"
 
 [compat]
