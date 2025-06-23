@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        julia-version: ["1.8", "1.9", "1.10"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Julia
+        uses: julia-actions/setup-julia@v1
+        with:
+          version: ${{ matrix.julia-version }}
+          project-file: easyHPC/Project.toml
+
+      - name: Cache registries and artifacts
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.julia/registries
+            ~/.julia/artifacts
+          key: ${{ runner.os }}-julia-registry-${{ hashFiles('**/easyHPC/Project.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-julia-registry-
+
+      - name: Cache compiled packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.julia/compiled
+          key: ${{ runner.os }}-julia-compiled-${{ matrix.julia-version }}-${{ hashFiles('**/easyHPC/Manifest.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-julia-compiled-${{ matrix.julia-version }}-
+
+      - name: Install dependencies
+        run: julia --project=easyHPC -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run tests
+        run: julia --project=easyHPC -e 'using Pkg; Pkg.test()'

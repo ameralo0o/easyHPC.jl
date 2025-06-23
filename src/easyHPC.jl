@@ -11,7 +11,7 @@ include("core/parmap.jl")
 include("core/parreduce.jl")
 include("core/parforeach.jl")
 __precompile__()
-include("core/timsort.jl")
+include("core/parsort.jl")
 
 
 export parsum, parmap, parreduce, parforeach, sort_numeric!
