@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         julia-version: ["1.8", "1.9", "1.10"]
@@ -22,32 +22,35 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Julia
+      - name: Set up Julia
         uses: julia-actions/setup-julia@v1
         with:
           version: ${{ matrix.julia-version }}
-          project-file: easyHPC/Project.toml
 
-      - name: Cache registries and artifacts
+      - name: Move into project directory
+        run: cd easyHPC.jl
+        shell: bash
+
+      - name: Cache Julia registries and artifacts
         uses: actions/cache@v3
         with:
           path: |
             ~/.julia/registries
             ~/.julia/artifacts
-          key: ${{ runner.os }}-julia-registry-${{ hashFiles('**/easyHPC/Project.toml') }}
+          key: ${{ runner.os }}-julia-${{ matrix.julia-version }}-registries-${{ hashFiles('easyHPC.jl/Project.toml') }}
           restore-keys: |
-            ${{ runner.os }}-julia-registry-
+            ${{ runner.os }}-julia-${{ matrix.julia-version }}-registries-
 
       - name: Cache compiled packages
         uses: actions/cache@v3
         with:
           path: ~/.julia/compiled
-          key: ${{ runner.os }}-julia-compiled-${{ matrix.julia-version }}-${{ hashFiles('**/easyHPC/Manifest.toml') }}
+          key: ${{ runner.os }}-julia-${{ matrix.julia-version }}-compiled-${{ hashFiles('easyHPC.jl/Manifest.toml') }}
           restore-keys: |
-            ${{ runner.os }}-julia-compiled-${{ matrix.julia-version }}-
+            ${{ runner.os }}-julia-${{ matrix.julia-version }}-compiled-
 
       - name: Install dependencies
-        run: julia --project=easyHPC -e 'using Pkg; Pkg.instantiate()'
+        run: julia --project=easyHPC.jl -e 'using Pkg; Pkg.instantiate()'
 
       - name: Run tests
-        run: julia --project=easyHPC -e 'using Pkg; Pkg.test()'
+        run: julia --project=easyHPC.jl -e 'using Pkg; Pkg.test()'
