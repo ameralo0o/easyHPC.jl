@@ -1,3 +1,6 @@
+using OhMyThreads
+using DataStructures: PriorityQueue
+
 # === Ordering Definition ===
 
 """
@@ -38,7 +41,12 @@ isless(::Reverse, a, b) = a > b
 const PARALLEL_THRESHOLD = 100_000  # Min length for parallel sort
 const SMALL_THRESHOLD = 32          # Max length for insertion sort
 const MAX_COUNTING_SORT_RANGE = 10^4  # Max value range for counting sort
-const MAX_PARALLEL_DEPTH = floor(Int, log2(Threads.nthreads()))  # Depth limit for nested threading
+
+
+function max_parallel_depth()
+    return max(1, floor(Int, log2(Threads.nthreads())))
+end
+
 
 """
     sort_numeric!(v::Vector{T}, o::Ordering=Forward())
@@ -264,18 +272,15 @@ function quicksort!(v::Vector, lo::Int, hi::Int, o::Ordering, depth::Int=0)
             return
         end
 
-        # Choose pivot via median-of-three
         mid = div(lo + hi, 2)
         pivot = median_of_three(v[lo], v[mid], v[hi], o)
-
-        # Partition the array
         p = hoare_partition!(v, lo, hi, pivot, o)
 
-        # Recursive calls with optional threading
-        if (hi - lo > PARALLEL_THRESHOLD) && depth < MAX_PARALLEL_DEPTH
-            t = Threads.@spawn quicksort!(v, lo, p, o, depth + 1)
-            quicksort!(v, p + 1, hi, o, depth + 1)
-            wait(t)
+        if (hi - lo > PARALLEL_THRESHOLD) && depth < max_parallel_depth()
+            @sync begin
+                OhMyThreads.@spawn quicksort!(v, lo, p, o, depth + 1)
+                OhMyThreads.@spawn quicksort!(v, p + 1, hi, o, depth + 1)
+            end
             return
         else
             if p - lo < hi - (p + 1)
@@ -289,6 +294,7 @@ function quicksort!(v::Vector, lo::Int, hi::Int, o::Ordering, depth::Int=0)
     end
     return v
 end
+
 
 
 # === Quicksort Partitioning Helpers ===
@@ -388,10 +394,11 @@ function parallel_merge_sort!(v::AbstractVector{T}, o::Ordering=Forward(), depth
     left = view(v, 1:mid)
     right = view(v, mid+1:n)
 
-    if n > PARALLEL_THRESHOLD
-        t = Threads.@spawn parallel_merge_sort!(left, o, depth + 1)
-        parallel_merge_sort!(right, o, depth + 1)
-        wait(t)
+    if depth < max_parallel_depth()
+        @sync begin
+            OhMyThreads.@spawn parallel_merge_sort!(left, o, depth + 1)
+            OhMyThreads.@spawn parallel_merge_sort!(right, o, depth + 1)
+        end
     else
         parallel_merge_sort!(left, o, depth + 1)
         parallel_merge_sort!(right, o, depth + 1)
@@ -400,6 +407,7 @@ function parallel_merge_sort!(v::AbstractVector{T}, o::Ordering=Forward(), depth
     merge_sorted!(v, left, right, o)
     return v
 end
+
 
 """
     merge_sorted!(dest, left, right, o::Ordering)
@@ -451,29 +459,30 @@ Splits input over threads and combines local histograms.
 function parallel_counting_sort!(v::Vector{T}, mn::T, mx::T, o::Ordering) where {T<:Integer}
     n = length(v)
     valrange = Int(mx - mn + 1)
-    nt = Threads.nthreads()
+    nchunks = nthreads()
+    chunks = OhMyThreads.index_chunks(v; n=nchunks)
 
-    # 1. Count per thread
-    local_counts = [zeros(Int, valrange) for _ in 1:nt]
-    Threads.@threads for t in 1:nt
-        tid = Threads.threadid()
-        chunk = cld(n, nt)
-        lo = (tid - 1) * chunk + 1
-        hi = min(tid * chunk, n)
-        for i in lo:hi
-            bin = Int(v[i]) - Int(mn) + 1
-            local_counts[tid][bin] += 1
+    # 1. Local counts
+    local_counts = Vector{Vector{Int}}(undef, length(chunks))
+    @sync for (i, idcs) in enumerate(chunks)
+        @spawn begin
+            counts = zeros(Int, valrange)
+            for idx in idcs
+                bin = Int(v[idx]) - Int(mn) + 1
+                counts[bin] += 1
+            end
+            local_counts[i] = counts
         end
     end
 
-    # 2. Merge counts into global
+    # 2. Merge to global
     global_counts = zeros(Int, valrange)
-    for t in 1:nt
-        global_counts .+= local_counts[t]
+    for lc in local_counts
+        global_counts .+= lc
     end
     @assert sum(global_counts) == n
 
-    # 3. Compute global start positions (exclusive prefix sum)
+    # 3. Prefix sum
     global_offsets = zeros(Int, valrange + 1)
     if o isa Forward
         for i in 1:valrange
@@ -485,31 +494,29 @@ function parallel_counting_sort!(v::Vector{T}, mn::T, mx::T, o::Ordering) where 
         end
     end
 
-    # 4. Compute per-thread bin start offsets
-    thread_offsets = [zeros(Int, valrange) for _ in 1:nt]
+    # 4. Per-thread start offsets
+    thread_offsets = Vector{Vector{Int}}(undef, length(chunks))
     for bin in 1:valrange
         pos = global_offsets[bin]
-        for t in 1:nt
-            thread_offsets[t][bin] = pos
-            pos += local_counts[t][bin]
+        for i in 1:length(chunks)
+            thread_offsets[i] = thread_offsets[i] === nothing ? zeros(Int, valrange) : thread_offsets[i]
+            thread_offsets[i][bin] = pos
+            pos += local_counts[i][bin]
         end
     end
 
-    # 5. Distribute elements in output array
+    # 5. Output
     output = similar(v)
-    Threads.@threads for t in 1:nt
-        tid = Threads.threadid()
-        chunk = cld(n, nt)
-        lo = (tid - 1) * chunk + 1
-        hi = min(tid * chunk, n)
-
-        local_pos = thread_offsets[tid]
-        for i in lo:hi
-            val = v[i]
-            bin = Int(val) - Int(mn) + 1
-            idx = local_pos[bin] + 1
-            @inbounds output[idx] = val
-            local_pos[bin] += 1
+    @sync for (i, idcs) in enumerate(chunks)
+        @spawn begin
+            pos = thread_offsets[i]
+            for idx in idcs
+                val = v[idx]
+                bin = Int(val) - Int(mn) + 1
+                outidx = pos[bin] + 1
+                output[outidx] = val
+                pos[bin] += 1
+            end
         end
     end
 

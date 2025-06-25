@@ -1,7 +1,10 @@
 using BenchmarkTools
 using easyHPC
+using Random
 
-A = rand(Float64, 10^8)
+A = rand(Float64, 1024^2)
 
-@btime sum($A)
-@btime parsum($A)
+display(@benchmark sum($A))
+display(@benchmark parsum($A))
+
+#julia --project=. --optimize=0 --compile=min benchmark/core/parsum_benchmark.jl
