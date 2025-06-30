@@ -1,5 +1,7 @@
 using OhMyThreads
 using DataStructures: PriorityQueue
+using FLoops
+
 
 # === Ordering Definition ===
 
@@ -38,7 +40,7 @@ isless(::Reverse, a, b) = a > b
 
 # === Main Sorting Function ===
 
-const PARALLEL_THRESHOLD = 100_000  # Min length for parallel sort
+const PARALLEL_THRESHOLD = 1^4  # Min length for parallel sort
 const SMALL_THRESHOLD = 32          # Max length for insertion sort
 const MAX_COUNTING_SORT_RANGE = 10^4  # Max value range for counting sort
 
@@ -49,18 +51,50 @@ end
 
 
 """
-    sort_numeric!(v::Vector{T}, o::Ordering=Forward())
+    sort_numeric!(v::Vector{T}, o::Ordering=Forward()) where T <: Real
 
-Efficiently sorts a numeric vector `v` in-place.
-Automatically chooses the best algorithm based on type and size.
+Efficiently sorts a numeric vector `v` in-place using the most suitable algorithm based on the data type, size, and value distribution.
 
-- `Forward()` for ascending (default)
-- `Reverse()` for descending
+Supports custom ordering via:
+- `Forward()` for ascending order (default)
+- `Reverse()` for descending order
 
-The function uses:
-- Insertion sort for small vectors
-- Counting or radix sort for integer vectors with small range
-- Multithreaded merge or quicksort for large data
+# Behavior
+The algorithm selection is adaptive:
+- Uses **insertion sort** for small vectors (length ≤ SMALL_THRESHOLD)
+- Uses **counting sort** (or parallel counting sort) for integer vectors with small value ranges
+- Falls back to **quicksort** or optionally **parallel merge sort** for large general cases
+
+Automatically handles already sorted or reverse-sorted inputs efficiently.
+
+# Arguments
+- `v`: A vector of numeric values to be sorted in-place.
+- `o`: An `Ordering` (optional), either `Forward()` or `Reverse()`.
+
+# Returns
+- The sorted vector `v` (modified in-place).
+
+# Example
+
+```julia
+julia> v = [5, 1, 9, 3, 7];
+
+julia> sort_numeric!(v)
+5-element Vector{Int64}:
+ 1
+ 3
+ 5
+ 7
+ 9
+
+julia> sort_numeric!(v, Reverse())
+5-element Vector{Int64}:
+ 9
+ 7
+ 5
+ 3
+ 1
+
 """
 function sort_numeric!(v::Vector{T}, o::Ordering=Forward()) where {T<:Real}
     n = length(v)
@@ -101,7 +135,8 @@ function sort_numeric!(v::Vector{T}, o::Ordering=Forward()) where {T<:Real}
 
     # Fallback to quicksort or merge sort
     if n > PARALLEL_THRESHOLD
-        parallel_merge_sort!(v, o)
+        #parallel_merge_sort!(v, o)
+        quicksort!(v, 1, n, o, 0)
     else
         quicksort!(v, 1, n, o, 0)
     end
@@ -276,13 +311,15 @@ function quicksort!(v::Vector, lo::Int, hi::Int, o::Ordering, depth::Int=0)
         pivot = median_of_three(v[lo], v[mid], v[hi], o)
         p = hoare_partition!(v, lo, hi, pivot, o)
 
-        if (hi - lo > PARALLEL_THRESHOLD) && depth < max_parallel_depth()
+
+        if hi - lo > PARALLEL_THRESHOLD && depth < max_parallel_depth()
             @sync begin
                 OhMyThreads.@spawn quicksort!(v, lo, p, o, depth + 1)
                 OhMyThreads.@spawn quicksort!(v, p + 1, hi, o, depth + 1)
             end
             return
         else
+
             if p - lo < hi - (p + 1)
                 quicksort!(v, lo, p, o, depth + 1)
                 lo = p + 1
@@ -292,7 +329,28 @@ function quicksort!(v::Vector, lo::Int, hi::Int, o::Ordering, depth::Int=0)
             end
         end
     end
-    return v
+end
+
+
+function quicksort_serial!(v::Vector, lo::Int, hi::Int, o::Ordering)
+    while lo < hi
+        if hi - lo + 1 <= SMALL_THRESHOLD
+            insertion_sort!(view(v, lo:hi), o)
+            return
+        end
+
+        mid = div(lo + hi, 2)
+        pivot = median_of_three(v[lo], v[mid], v[hi], o)
+        p = hoare_partition!(v, lo, hi, pivot, o)
+
+        if p - lo < hi - (p + 1)
+            quicksort_serial!(v, lo, p, o)
+            lo = p + 1
+        else
+            quicksort_serial!(v, p + 1, hi, o)
+            hi = p
+        end
+    end
 end
 
 
@@ -375,16 +433,14 @@ end
 
 
 # === Parallel Merge Sort ===
-
 """
-    parallel_merge_sort!(v::AbstractVector{T}, o::Ordering=Forward(), depth::Int=0)
+    parallel_merge_sort!(v::Vector{T}, o::Ordering=Forward())
 
-Parallel merge sort implementation using threads.
-Recursively sorts left and right halves in parallel if large enough.
-Falls back to insertion sort for small vectors.
+Parallel merge sort using shared pre-allocated temp buffer.
 """
-function parallel_merge_sort!(v::AbstractVector{T}, o::Ordering=Forward(), depth::Int=0) where {T<:Real}
+function parallel_merge_sort!(v::AbstractVector{T}, o::Ordering=Forward(), depth::Int=0, tmp::AbstractVector{T}=similar(v)) where {T<:Real}
     n = length(v)
+
     if n <= SMALL_THRESHOLD
         insertion_sort!(v, o)
         return v
@@ -393,33 +449,40 @@ function parallel_merge_sort!(v::AbstractVector{T}, o::Ordering=Forward(), depth
     mid = div(n, 2)
     left = view(v, 1:mid)
     right = view(v, mid+1:n)
+    tmpleft = view(tmp, 1:mid)
+    tmpright = view(tmp, mid+1:n)
 
     if depth < max_parallel_depth()
         @sync begin
-            OhMyThreads.@spawn parallel_merge_sort!(left, o, depth + 1)
-            OhMyThreads.@spawn parallel_merge_sort!(right, o, depth + 1)
+            OhMyThreads.@spawn parallel_merge_sort!(left, o, depth + 1, tmpleft)
+            OhMyThreads.@spawn parallel_merge_sort!(right, o, depth + 1, tmpright)
         end
     else
-        parallel_merge_sort!(left, o, depth + 1)
-        parallel_merge_sort!(right, o, depth + 1)
+        parallel_merge_sort!(left, o, depth + 1, tmpleft)
+        parallel_merge_sort!(right, o, depth + 1, tmpright)
     end
 
-    merge_sorted!(v, left, right, o)
+    merge_sorted!(v, left, right, o, tmp)
     return v
 end
 
-
 """
-    merge_sorted!(dest, left, right, o::Ordering)
+    merge_sorted!(dest, left, right, o, tmp)
 
-Merges two sorted subarrays `left` and `right` into `dest` in order `o`.
+Merges `left` and `right` into `dest` using `tmp` as temporary buffer.
+Requires that `tmp` has at least length(dest).
 """
-function merge_sorted!(dest::AbstractVector{T}, left::AbstractVector{T}, right::AbstractVector{T}, o::Ordering) where {T}
+function merge_sorted!(
+    dest::AbstractVector{T},
+    left::AbstractVector{T},
+    right::AbstractVector{T},
+    o::Ordering,
+    tmp::AbstractVector{T}
+) where {T}
     i = j = k = 1
     nl, nr = length(left), length(right)
-    tmp = similar(dest, nl + nr)
 
-    while i <= nl && j <= nr
+    @inbounds while i <= nl && j <= nr
         if isless(o, left[i], right[j])
             tmp[k] = left[i]
             i += 1
@@ -430,21 +493,22 @@ function merge_sorted!(dest::AbstractVector{T}, left::AbstractVector{T}, right::
         k += 1
     end
 
-    while i <= nl
+    @inbounds while i <= nl
         tmp[k] = left[i]
         i += 1
         k += 1
     end
 
-    while j <= nr
+    @inbounds while j <= nr
         tmp[k] = right[j]
         j += 1
         k += 1
     end
 
-    dest .= tmp
+    @inbounds dest .= tmp
     return dest
 end
+
 
 
 
@@ -459,30 +523,35 @@ Splits input over threads and combines local histograms.
 function parallel_counting_sort!(v::Vector{T}, mn::T, mx::T, o::Ordering) where {T<:Integer}
     n = length(v)
     valrange = Int(mx - mn + 1)
-    nchunks = nthreads()
-    chunks = OhMyThreads.index_chunks(v; n=nchunks)
 
-    # 1. Local counts
-    local_counts = Vector{Vector{Int}}(undef, length(chunks))
-    @sync for (i, idcs) in enumerate(chunks)
-        @spawn begin
-            counts = zeros(Int, valrange)
-            for idx in idcs
-                bin = Int(v[idx]) - Int(mn) + 1
-                counts[bin] += 1
-            end
-            local_counts[i] = counts
+    if valrange > easyHPC.MAX_COUNTING_SORT_RANGE
+        error("Value range $valrange exceeds allowed counting sort range")
+    end
+
+    nthreads = Threads.nthreads()
+
+    # Step 1: Allocate thread-local histograms as a 2D array
+    # local_counts[bin, thread] holds frequency count for each bin per thread
+    local_counts = zeros(Int, valrange, nthreads)
+
+    # Step 2: Divide work into chunks per thread and count values
+    chunks = OhMyThreads.index_chunks(v; n=nthreads)
+    Threads.@threads for tid in 1:nthreads
+        chunk = chunks[tid]
+        counts = @view local_counts[:, tid]
+        for idx in chunk
+            bin = Int(v[idx]) - Int(mn) + 1
+            @inbounds counts[bin] += 1
         end
     end
 
-    # 2. Merge to global
-    global_counts = zeros(Int, valrange)
-    for lc in local_counts
-        global_counts .+= lc
-    end
+    # Step 3: Merge thread-local counts into global histogram
+    global_counts = sum(local_counts, dims=2)
+    global_counts = vec(global_counts)
+
     @assert sum(global_counts) == n
 
-    # 3. Prefix sum
+    # Step 4: Compute global prefix sum (offsets)
     global_offsets = zeros(Int, valrange + 1)
     if o isa Forward
         for i in 1:valrange
@@ -494,32 +563,34 @@ function parallel_counting_sort!(v::Vector{T}, mn::T, mx::T, o::Ordering) where 
         end
     end
 
-    # 4. Per-thread start offsets
-    thread_offsets = Vector{Vector{Int}}(undef, length(chunks))
+    # Step 5: Compute thread-local write offsets from global_offsets
+    thread_offsets = [zeros(Int, valrange) for _ in 1:nthreads]
     for bin in 1:valrange
         pos = global_offsets[bin]
-        for i in 1:length(chunks)
-            thread_offsets[i] = thread_offsets[i] === nothing ? zeros(Int, valrange) : thread_offsets[i]
-            thread_offsets[i][bin] = pos
-            pos += local_counts[i][bin]
+        for t in 1:nthreads
+            thread_offsets[t][bin] = pos
+            pos += local_counts[bin, t]
         end
     end
 
-    # 5. Output
+    # Step 6: Parallel write to output array (disjoint per thread)
     output = similar(v)
-    @sync for (i, idcs) in enumerate(chunks)
-        @spawn begin
-            pos = thread_offsets[i]
-            for idx in idcs
-                val = v[idx]
-                bin = Int(val) - Int(mn) + 1
-                outidx = pos[bin] + 1
-                output[outidx] = val
-                pos[bin] += 1
-            end
+    Threads.@threads for tid in 1:nthreads
+        chunk = chunks[tid]
+        offsets = thread_offsets[tid]
+        for idx in chunk
+            val = v[idx]
+            bin = Int(val) - Int(mn) + 1
+            outidx = offsets[bin] + 1
+            @inbounds output[outidx] = val
+            offsets[bin] += 1
         end
     end
 
-    v .= output
+    # Step 7: Copy output back in parallel
+    Threads.@threads for i in eachindex(v)
+        v[i] = output[i]
+    end
+
     return v
 end
